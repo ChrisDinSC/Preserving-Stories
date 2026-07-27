@@ -2,10 +2,15 @@ import Link from "next/link";
 import { BookOpen } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
+import { requireActiveArchive } from "@/lib/require-archive";
 
+export const dynamic = "force-dynamic";
 export const metadata = { title: "Library — EverMoments" };
 
-export default function LibraryPage() {
+export default async function LibraryPage() {
+  // Redirects to /onboarding if the user has no archive.
+  await requireActiveArchive();
+
   return (
     <div className="space-y-8">
       <div>

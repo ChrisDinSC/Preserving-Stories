@@ -37,7 +37,15 @@ export function LoginForm() {
       return;
     }
 
-    router.push("/dashboard");
+    // Honor a safe same-site redirect target set by the middleware.
+    let dest = "/dashboard";
+    if (typeof window !== "undefined") {
+      const target = new URLSearchParams(window.location.search).get("redirect");
+      if (target && target.startsWith("/") && !target.startsWith("//")) {
+        dest = target;
+      }
+    }
+    router.push(dest);
     router.refresh();
   }
 

@@ -2,16 +2,17 @@ import Link from "next/link";
 import { BookOpen, FileText, Users, Mic } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/server";
+import { requireActiveArchive } from "@/lib/require-archive";
+import {
+  getUserArchives,
+  getArchiveDetail,
+  getStoryCounts,
+} from "@/lib/archives";
 import { Button } from "@/components/ui/Button";
 import { Card, CardTitle } from "@/components/ui/Card";
+import { ArchiveSwitcher } from "@/components/archive/ArchiveSwitcher";
 
 export const dynamic = "force-dynamic";
-
-const stats = [
-  { label: "Stories", value: 0, Icon: BookOpen, tint: "text-warm-600" },
-  { label: "Drafts", value: 0, Icon: FileText, tint: "text-stone-500" },
-  { label: "Archive members", value: 1, Icon: Users, tint: "text-forest-600" },
-];
 
 function EmptyState({
   title,
@@ -40,6 +41,9 @@ function EmptyState({
 }
 
 export default async function DashboardPage() {
+  // Redirects to /onboarding if the user has no archive.
+  const { archive } = await requireActiveArchive();
+
   const supabase = createClient();
   const {
     data: { user },
@@ -49,6 +53,37 @@ export default async function DashboardPage() {
     (user?.user_metadata?.full_name as string | undefined) ?? "there";
   const firstName = fullName.split(" ")[0];
 
+  const [memberships, detail, storyCounts] = await Promise.all([
+    getUserArchives(),
+    getArchiveDetail(archive.id),
+    user
+      ? getStoryCounts(archive.id, user.id)
+      : Promise.resolve({ total: 0, drafts: 0 }),
+  ]);
+
+  const memberCount = detail?.memberCount ?? 1;
+
+  const stats = [
+    {
+      label: "Stories",
+      value: storyCounts.total,
+      Icon: BookOpen,
+      tint: "text-warm-600",
+    },
+    {
+      label: "Your drafts",
+      value: storyCounts.drafts,
+      Icon: FileText,
+      tint: "text-stone-500",
+    },
+    {
+      label: "Archive members",
+      value: memberCount,
+      Icon: Users,
+      tint: "text-forest-600",
+    },
+  ];
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -57,6 +92,8 @@ export default async function DashboardPage() {
             Welcome back, {firstName}
           </h1>
           <p className="mt-1 text-stone-600">
+            You&apos;re viewing{" "}
+            <span className="font-medium text-stone-800">{archive.name}</span>.
             Preserve a new memory or revisit your family&apos;s stories.
           </p>
         </div>
@@ -67,6 +104,16 @@ export default async function DashboardPage() {
           </Button>
         </Link>
       </div>
+
+      {memberships.length > 1 ? (
+        <ArchiveSwitcher
+          archives={memberships.map((m) => ({
+            id: m.archive.id,
+            name: m.archive.name,
+          }))}
+          activeArchiveId={archive.id}
+        />
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {stats.map(({ label, value, Icon, tint }) => (

@@ -23,14 +23,6 @@ export const storySchema = z.object({
   tags: z.array(z.string().min(1)).default([]),
 });
 
-export const archiveSchema = z.object({
-  name: z.string().min(1, "Archive name is required").max(120, "Name is too long"),
-  description: z
-    .string()
-    .max(1000, "Description is too long")
-    .optional()
-    .or(z.literal("")),
-});
-
 export type StoryInput = z.infer<typeof storySchema>;
-export type ArchiveInput = z.infer<typeof archiveSchema>;
+
+// Archive validation lives in ./archive.ts (archiveSchema, inviteMemberSchema, ...).
