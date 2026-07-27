@@ -191,18 +191,77 @@ begin
   raise notice 'PASS 11: invited email accepted and became a viewer';
 end $$;
 
--- 12) Re-accepting an accepted invitation is rejected ------------------------
+-- 12) Accepted tokens are not reusable; already-member accept is idempotent ---
+-- Documented contract: when the caller is already a member, accept_invitation
+-- does NOT raise. It consumes the token (persists accepted_at) and returns the
+-- archive id, so the token is neither reusable nor left misleadingly pending,
+-- and no duplicate membership is created.
 do $$
+declare v uuid; inv2 uuid; ret uuid; n int; acc timestamptz;
 begin
+  select _authz.v::uuid into v from _authz where k = 'archive';
+
+  -- (a) Re-accepting the already-accepted token from check 11 is rejected.
   perform set_config('role', 'authenticated', true);
   perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222"}', true);
   begin
     perform public.accept_invitation('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
-    raise exception 'FAIL 12: accepted invitation was reused';
+    raise exception 'FAIL 12a: accepted invitation was reused';
   exception when others then
-    if sqlerrm <> 'invitation_already_accepted' then raise exception 'FAIL 12: wrong error %', sqlerrm; end if;
+    if sqlerrm <> 'invitation_already_accepted' then raise exception 'FAIL 12a: wrong error %', sqlerrm; end if;
   end;
-  raise notice 'PASS 12: an accepted invitation cannot be reused';
+
+  -- (b) The already-member branch of accept_invitation. To reach it legitimately
+  -- we need a still-pending invitation whose invitee has since become a member by
+  -- another path (create_invitation itself blocks already-members). Use a fresh
+  -- archive so Carol stays a stranger to the main archive used by later checks.
+  declare w uuid;
+  begin
+    perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111"}', true);
+    w := public.create_archive_with_owner('Idempotent Accept', null);
+
+    -- Invite Carol while she is NOT yet a member (token pending).
+    inv2 := public.create_invitation(w, 'carol@example.com', 'viewer',
+              'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+              now() + interval '14 days');
+
+    -- Owner adds Carol directly, so the pending token now targets a member.
+    insert into public.archive_members (archive_id, user_id, role)
+      values (w, '33333333-3333-3333-3333-333333333333', 'viewer');
+
+    -- Carol accepts the pending token: idempotent SUCCESS (no exception), returns w.
+    perform set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333"}', true);
+    ret := public.accept_invitation('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd');
+    if ret is distinct from w then
+      raise exception 'FAIL 12b: already-member accept did not return the archive id';
+    end if;
+
+    -- No duplicate membership was created (still exactly one row for Carol).
+    select count(*) into n from public.archive_members
+      where archive_id = w and user_id = '33333333-3333-3333-3333-333333333333';
+    if n <> 1 then raise exception 'FAIL 12c: duplicate membership created (% rows)', n; end if;
+
+    -- The token was consumed: accepted_at is persisted (read as the owner).
+    perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111"}', true);
+    select accepted_at into acc from public.archive_invitations where id = inv2;
+    if acc is null then raise exception 'FAIL 12d: token left reusable (accepted_at null)'; end if;
+
+    -- And it cannot be reused: a second attempt fails cleanly.
+    perform set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333"}', true);
+    begin
+      perform public.accept_invitation('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd');
+      raise exception 'FAIL 12e: consumed token was reused';
+    exception when others then
+      if sqlerrm <> 'invitation_already_accepted' then raise exception 'FAIL 12e: wrong error %', sqlerrm; end if;
+    end;
+
+    -- Tidy up the throwaway archive (cascades Carol's membership) so she stays a
+    -- stranger to Alice for the later profile-visibility checks.
+    perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111"}', true);
+    delete from public.archives where id = w;
+  end;
+
+  raise notice 'PASS 12: accepted tokens are not reusable; already-member accept is idempotent and consumes the token';
 end $$;
 
 -- 13) Member list visibility (member sees all; stranger sees none) -----------
@@ -307,6 +366,107 @@ begin
   select count(*) into n from public.archive_members where id = bob;
   if n <> 0 then raise exception 'FAIL 17b: member not removed'; end if;
   raise notice 'PASS 17: removal is owner-only and works for non-owner members';
+end $$;
+
+-- 18) A selected viewer loses access after removal from the archive ---------
+-- Proves can_view_story() requires BOTH an explicit story_permissions row AND
+-- current membership: once membership is gone, the stale permission row alone
+-- must not grant access.
+--
+-- The fixture rows are created with table-owner privileges (RESET ROLE) rather
+-- than through the RLS insert paths: the insert policies for these tables are
+-- already proven by checks 1-17, and the target under test here is the
+-- can_view_story() read function, evaluated below as each signed-in user.
+reset role;
+do $$
+declare ax uuid; sid uuid;
+begin
+  insert into public.archives (name, owner_id)
+    values ('Selected Access', '11111111-1111-1111-1111-111111111111')
+    returning id into ax;
+  insert into public.archive_members (archive_id, user_id, role) values
+    (ax, '11111111-1111-1111-1111-111111111111', 'owner'),
+    (ax, '33333333-3333-3333-3333-333333333333', 'viewer');
+  insert into public.stories (archive_id, title, owner_id, privacy)
+    values (ax, 'Private tale', '11111111-1111-1111-1111-111111111111', 'selected_members')
+    returning id into sid;
+  insert into public.story_permissions (story_id, user_id)
+    values (sid, '33333333-3333-3333-3333-333333333333');
+  insert into _authz values ('ax18', ax::text), ('sid18', sid::text);
+end $$;
+
+-- 18a) While a member AND selected, Carol can view the story.
+do $$
+declare sid uuid; ok boolean;
+begin
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333"}', true);
+  select _authz.v::uuid into sid from _authz where k = 'sid18';
+  select public.can_view_story(sid) into ok;
+  if not ok then raise exception 'FAIL 18a: selected member could not view the story'; end if;
+end $$;
+
+-- Remove Carol from the archive; the stale story_permissions row stays behind.
+reset role;
+delete from public.archive_members
+  where archive_id = (select v::uuid from _authz where k = 'ax18')
+    and user_id = '33333333-3333-3333-3333-333333333333';
+do $$
+declare sid uuid; nperm int;
+begin
+  select _authz.v::uuid into sid from _authz where k = 'sid18';
+  select count(*) into nperm from public.story_permissions
+    where story_id = sid and user_id = '33333333-3333-3333-3333-333333333333';
+  if nperm <> 1 then raise exception 'FAIL 18b: permission row unexpectedly gone'; end if;
+end $$;
+
+-- 18c) Still selected but no longer a member -> access is denied.
+do $$
+declare sid uuid; ok boolean;
+begin
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333"}', true);
+  select _authz.v::uuid into sid from _authz where k = 'sid18';
+  select public.can_view_story(sid) into ok;
+  if ok then raise exception 'FAIL 18c: removed member still viewed the selected story'; end if;
+  raise notice 'PASS 18: a selected viewer loses access after removal from the archive';
+end $$;
+
+-- 19) Deleting an archive cascades its owner membership successfully ---------
+-- Proves the owner-protection trigger blocks DIRECT owner removal but allows
+-- ON DELETE CASCADE from a legitimate archive deletion. The trigger fires
+-- regardless of role, so the fixture is created with table-owner privileges
+-- (RESET ROLE): the block below then proves the trigger stops even a
+-- privileged direct delete, while archive deletion cascades cleanly.
+reset role;
+do $$
+declare az uuid; n int;
+begin
+  insert into public.archives (name, owner_id)
+    values ('Disposable', '11111111-1111-1111-1111-111111111111')
+    returning id into az;
+  insert into public.archive_members (archive_id, user_id, role)
+    values (az, '11111111-1111-1111-1111-111111111111', 'owner');
+
+  select count(*) into n from public.archive_members where archive_id = az and role = 'owner';
+  if n <> 1 then raise exception 'FAIL 19a: owner membership missing before delete'; end if;
+
+  -- Direct deletion of the owner membership is still blocked by the trigger.
+  begin
+    delete from public.archive_members where archive_id = az and role = 'owner';
+    raise exception 'FAIL 19b: owner membership was directly deleted';
+  exception when others then
+    if sqlerrm <> 'cannot_remove_owner' then raise exception 'FAIL 19b: wrong error %', sqlerrm; end if;
+  end;
+
+  -- Legitimate archive deletion succeeds and cascades the owner row.
+  delete from public.archives where id = az;
+  select count(*) into n from public.archive_members where archive_id = az;
+  if n <> 0 then raise exception 'FAIL 19c: owner membership not cascaded (% rows)', n; end if;
+  select count(*) into n from public.archives where id = az;
+  if n <> 0 then raise exception 'FAIL 19d: archive not deleted'; end if;
+
+  raise notice 'PASS 19: archive deletion cascades the owner membership; direct owner deletion stays blocked';
 end $$;
 
 do $$ begin raise notice 'ALL AUTHORIZATION CHECKS PASSED'; end $$;

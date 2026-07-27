@@ -323,6 +323,9 @@ as $$
         or (s.privacy = 'archive_members' and public.is_archive_member(s.archive_id))
         or (
           s.privacy = 'selected_members'
+          -- Selected viewers keep access only while they are BOTH explicitly
+          -- selected AND still a current member of the story's archive.
+          and public.is_archive_member(s.archive_id)
           and exists (
             select 1 from public.story_permissions sp
             where sp.story_id = s.id and sp.user_id = auth.uid()
@@ -350,7 +353,12 @@ begin
     end if;
     return new;
   elsif tg_op = 'DELETE' then
-    if old.role = 'owner' then
+    -- Block direct removal of the owner membership, but allow the row to be
+    -- removed by ON DELETE CASCADE when the archive itself is being deleted.
+    -- During a cascade the parent archive row is already gone, so its absence
+    -- distinguishes a legitimate archive deletion from a direct owner delete.
+    if old.role = 'owner'
+       and exists (select 1 from public.archives a where a.id = old.archive_id) then
       raise exception 'cannot_remove_owner';
     end if;
     return old;
@@ -867,14 +875,19 @@ begin
     raise exception 'invitation_wrong_email';
   end if;
 
-  -- Reject if already a member.
+  -- Already-a-member case: treat acceptance as idempotent success rather than
+  -- raising (a raise would roll back within the caller's transaction, leaving
+  -- the token still pending and misleadingly reusable). The caller already has
+  -- access, so we consume the token (mark it accepted) and return the archive
+  -- id. A second attempt then fails cleanly with 'invitation_already_accepted'.
   if exists (
     select 1 from public.archive_members m
     where m.archive_id = v_inv.archive_id and m.user_id = auth.uid()
   ) then
-    -- Still mark accepted so the token can't be reused, then report.
-    update public.archive_invitations set accepted_at = now() where id = v_inv.id;
-    raise exception 'already_member';
+    update public.archive_invitations
+    set accepted_at = now()
+    where id = v_inv.id;
+    return v_inv.archive_id;
   end if;
 
   insert into public.archive_members (archive_id, user_id, role, invited_by, joined_at)
