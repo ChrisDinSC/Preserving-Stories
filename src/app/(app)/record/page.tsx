@@ -1,10 +1,15 @@
 import { Mic } from "lucide-react";
 
 import { Card } from "@/components/ui/Card";
+import { requireActiveArchive } from "@/lib/require-archive";
 
+export const dynamic = "force-dynamic";
 export const metadata = { title: "Record — EverMoments" };
 
-export default function RecordPage() {
+export default async function RecordPage() {
+  // Redirects to /onboarding if the user has no archive.
+  await requireActiveArchive();
+
   return (
     <div className="space-y-8">
       <div>

@@ -11,6 +11,8 @@ const PROTECTED_PREFIXES = [
   "/record",
   "/archive",
   "/account",
+  "/onboarding",
+  "/invitations",
 ];
 
 /** Auth pages that authenticated users should be redirected away from. */
@@ -64,12 +66,22 @@ export async function updateSession(request: NextRequest) {
   if (!user && isProtected) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
+    // Preserve the intended destination so we can return here after login.
+    const dest = pathname + request.nextUrl.search;
+    url.search = "";
+    url.searchParams.set("redirect", dest);
     return NextResponse.redirect(url);
   }
 
   if (user && isAuthRoute) {
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
+    // Honor a safe (same-site, absolute-path) redirect target if present.
+    const redirectParam = request.nextUrl.searchParams.get("redirect");
+    url.search = "";
+    url.pathname =
+      redirectParam && redirectParam.startsWith("/") && !redirectParam.startsWith("//")
+        ? redirectParam
+        : "/dashboard";
     return NextResponse.redirect(url);
   }
 
