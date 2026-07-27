@@ -51,13 +51,14 @@ personal stories in the storyteller's own voice.
    b. Open the **SQL Editor** and run the contents of
       [`supabase/migrations/001_initial_schema.sql`](supabase/migrations/001_initial_schema.sql).
       This creates all tables, indexes, triggers, Row Level Security policies, and the
-      storage bucket.
+      `audio-recordings` storage bucket.
 
-   c. Confirm a **Storage** bucket named `audio-recordings` exists and is **private**
-      (the migration creates it; verify under Storage).
+   c. Verify the migration succeeded: under **Storage**, confirm a bucket named
+      `audio-recordings` exists and is set to **private** (created automatically by the
+      migration).
 
    d. Under **Project Settings → API**, copy the **Project URL** and **anon public key**
-      into `.env.local`. Copy the **service_role key** into `SUPABASE_SERVICE_ROLE_KEY`.
+      into `.env.local`.
 
 5. **Run the dev server**
 
@@ -77,7 +78,6 @@ Defined in `.env.local` (see `.env.local.example`):
 | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | Your Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon/public API key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (server-only; never exposed to the browser) |
 | `NEXT_PUBLIC_APP_URL` | Public base URL of the app (e.g. `http://localhost:3000`) |
 
 > `.env.local` is git-ignored. Never commit real secrets.
